@@ -222,11 +222,54 @@ class DownloadBook {
   }
 
 
+  createThrottle(max) {
+    if (typeof max !== 'number') {
+      throw new TypeError('`createThrottle` expects a valid Number')
+    }
+  
+    let cur = 0
+    const queue = []
+    function throttle(fn) {
+      return new Promise((resolve, reject) => {
+        function handleFn() {
+          if (cur < max) {
+            throttle.current = ++cur
+            fn()
+              .then(val => {
+                resolve(val)
+                throttle.current = --cur
+                if (queue.length > 0) {
+                  queue.shift()()
+                }
+              })
+              .catch(err => {
+                reject(err)
+                throttle.current = --cur
+                if (queue.length > 0) {
+                  queue.shift()()
+                }
+              })
+          } else {
+            queue.push(handleFn)
+          }
+        }
+  
+        handleFn()
+      })
+    }
+  
+    // keep copies of the "state" for retrospection
+    throttle.current = cur
+    throttle.queue = queue
+  
+    return throttle
+  }
 
   async getChapters(chapters) {
     var toc = await this.getTOC(this.bookId);
     console.log(toc);
-    let promises = chapters.map((chapterUrl) => {
+    const throttle = this.createThrottle(2)
+    let promises = chapters.map((chapterUrl) => throttle(async () => {
       return this.fetchResource(chapterUrl, { uri: chapterUrl }).then((chapterMeta) => {
         
         if (!chapterMeta.content) {
@@ -251,7 +294,8 @@ class DownloadBook {
           return Promise.resolve(chapterMeta);
         });
       });
-    });
+    }))
+
     return Promise.all(promises).then((body) => {
       console.log('successfully fetched all the chapters content');
       return Promise.resolve(body);
