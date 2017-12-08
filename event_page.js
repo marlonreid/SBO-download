@@ -22,7 +22,7 @@ class DownloadBook {
   }
 
   downloadFile(book) {
-    let filename =this.bookTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+    let filename = this.bookTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()
     let url = window.URL.createObjectURL(book)
     let link = document.createElement('a')
     link.download = filename + '.epub'
@@ -38,122 +38,111 @@ class DownloadBook {
     if (!id) {
       return Promise.reject("id was not specified");
     }
-    
+
     var book = new Object();
     var metadata = await this.getMetadata(id);
-    
+
     book.title = metadata.title;
     this.bookTitle = book.title;
     book.uuid = metadata.identifier;
     book.language = metadata.language;
     book.author = metadata.authors.map((json) => {
-        return json.name;
-      });
+      return json.name;
+    });
     book.cover = metadata.cover;
-    book.description = metadata.description;  
+    book.description = metadata.description;
     book.publisher = metadata.publishers.map((json) => {
-        return json.name;
-      });
+      return json.name;
+    });
 
     book.chapters = await this.getChapters(metadata.chapters);
     book.stylesheet = await this.getStylesheetUrl(book.chapters);
     console.log(book);
-    
+
     // mimetype
     zip.file("mimetype", "application/epub+zip");
 
     // metadata
-    zip.file("META-INF/container.xml",`<?xml version="1.0" encoding="UTF-8" ?>
+    zip.file("META-INF/container.xml", `<?xml version="1.0" encoding="UTF-8" ?>
     <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
     <rootfiles>
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
     </rootfiles>
     </container>`);
-    
+
     // Do the cover
     var coverResponse = await this.fetchResource(book.cover, { uri: book.cover, json: false });
     var coverContents = await coverResponse.blob();
     zip.file("OEBPS/images/cover.jpg", coverContents);
-    
+
     // Stylesheet it
     zip.file("OEBPS/core.css", book.stylesheet);
 
     // Do the chapters
     var imagesForChapter = [];
-    for(var i = 0; i < book.chapters.length; ++i) {
+    for (var i = 0; i < book.chapters.length; ++i) {
       var chapter = book.chapters[i];
-      
+
       // Get the images for the chapter
 
-      for(var j = 0; j < chapter.images.length; ++j) {
+      for (var j = 0; j < chapter.images.length; ++j) {
         var image = chapter.images[j];
         let pathArray = image.split('/');
         var newLocation = image;
-        if(pathArray.length > 1) {
-          newLocation = pathArray[pathArray.length -1];
+        if (pathArray.length > 1) {
+          newLocation = pathArray[pathArray.length - 1];
         }
-      imagesForChapter.push({ baseUrl: chapter.asset_base_url, file: image, media: "image/jpg",path: newLocation });
+        imagesForChapter.push({ baseUrl: chapter.asset_base_url, file: image, media: "image/jpg", path: newLocation });
 
         var imageUrl = chapter.asset_base_url + image;
-        var imageResponse = await this.fetchResource(imageUrl,{uri: imageUrl, json:false});
-        var imagedata = await imageResponse.blob();
-        zip.file("OEBPS/images/" + newLocation, imagedata);
+        this.fetchResource(imageUrl, { uri: imageUrl, json: false }).then((imageResponse) => {
+          imageResponse.blob().then((imagedata) => { zip.file("OEBPS/images/" + newLocation, imagedata) });
+        });
       }
 
       // Get the actual chapter contents
-      var chapterContentResponse = await this.fetchResource(chapter.content, {uri: chapter.content, json:false});
+      var chapterContentResponse = await this.fetchResource(chapter.content, { uri: chapter.content, json: false });
       var contents = await chapterContentResponse.text();
 
       // Link up the images to the chapter contents
-      chapter.images.forEach( (image) => {
+      chapter.images.forEach((image) => {
         var re = new RegExp(`"[^"]*${image}"`, 'g');
         let pathArray = image.split('/');
         var newLocation = image;
-        if(pathArray.length > 1) {
-          newLocation = pathArray[pathArray.length -1];
+        if (pathArray.length > 1) {
+          newLocation = pathArray[pathArray.length - 1];
         }
         contents = contents.replace(re, `"images/${newLocation}"`);
       });
 
       // Add css
       var coreCSS = "";
-      if(book.stylesheet) {
+      if (book.stylesheet) {
         coreCSS = `<link type="text/css" rel="stylesheet" media="all" href="core.css" />`;
       }
       // ## purify html
       contents = this.purifyHTML(contents);
-      let fileContent = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-  <!DOCTYPE html>
-  <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:m="http://www.w3.org/1998/Math/MathML" xmlns:pls="http://www.w3.org/2005/01/pronunciation-lexicon" xmlns:ssml="http://www.w3.org/2001/10/synthesis" xmlns:svg="http://www.w3.org/2000/svg">
-  <head>
-    <meta charset="UTF-8" />
-    <title>${chapter.title}</title>
-    <link type="text/css" rel="stylesheet" media="all" href="style.css" />
-    ${coreCSS}
-  </head>
-  <body>
-    ${contents}
-  </body>
-  </html>`;
-
+      var contentsEjs = new EJS({ url: '/oebps.ejs' })
+      const fileContent = contentsEjs.render({ title: chapter.title, coreCSS, contents })
       zip.file("OEBPS/" + chapter.filename, fileContent);
+
     }
 
     // Used for OPF
     book.imagesToFetch = imagesForChapter;
 
     // Create OPF
-    var contentEjs = new EJS({url: '/content.opf.ejs'})
+    var contentEjs = new EJS({ url: '/content.opf.ejs' })
     var opfData = contentEjs.render(book)
     zip.file("OEBPS/content.opf", opfData);
 
     // Create TOC
-    var tocEjs = new EJS({url: '/toc.ncx.ejs'})
+    var tocEjs = new EJS({ url: '/toc.ncx.ejs' })
     var toc = tocEjs.render(book);
     zip.file("OEBPS/toc.ncx", toc);
 
     // Create style
-    var styleEjs = new EJS({url: '/style.css.ejs'});
+    var styleEjs = new EJS({ url: '/style.css.ejs' });
     var style = styleEjs.render(book);
     zip.file("OEBPS/style.css", style);
 
@@ -163,11 +152,11 @@ class DownloadBook {
   purifyHTML(string) {
     // area,base,basefont,br,col,frame,hr,img,input,isindex,keygen,link,meta,menuitem,source,track,param,embed,wbr
     // <(\s?img[^>]*[^\/])>
-    ["img"].forEach( (tag) => {
+    ["img"].forEach((tag) => {
       var re = new RegExp("<(\s?" + tag + "[^>]*[^\/])>", 'g');
       string = string.replace(re, "<$1 />");
     });
-    ["br", "hr"].forEach( (tag) => {
+    ["br", "hr"].forEach((tag) => {
       var re = new RegExp("<\s?" + tag + "[^>]*>", "g");
       string = string.replace(re, `<${tag}/>`);
     });
@@ -199,11 +188,10 @@ class DownloadBook {
     });
     var stylesheetUrl;
     if (cssSet.size > 1) {
-      console.log(`an error occurred while fetching stylesheets. there are ${cssSet.size} different stylesheets. only supporting one.`);
-    } else if (cssSet.size == 1) {
-      stylesheetUrl = Array.from(cssSet)[0];
+      console.log(`an error occurred while fetching stylesheets. there are ${cssSet.size} different stylesheets. Taking the first one.`);
     }
 
+    stylesheetUrl = Array.from(cssSet)[0];
     var stylesheetResponse = await this.fetchResource(stylesheetUrl, { uri: stylesheetUrl, json: false });
     var stylesheet = await stylesheetResponse.text();
     console.log(`stylesheet retrieved: ${stylesheetUrl}`);
@@ -226,7 +214,7 @@ class DownloadBook {
     if (typeof max !== 'number') {
       throw new TypeError('`createThrottle` expects a valid Number')
     }
-  
+
     let cur = 0
     const queue = []
     function throttle(fn) {
@@ -253,32 +241,28 @@ class DownloadBook {
             queue.push(handleFn)
           }
         }
-  
+
         handleFn()
       })
     }
-  
+
     // keep copies of the "state" for retrospection
     throttle.current = cur
     throttle.queue = queue
-  
     return throttle
   }
 
   async getChapters(chapters) {
     var toc = await this.getTOC(this.bookId);
-    console.log(toc);
-    const throttle = this.createThrottle(2)
+    const throttle = this.createThrottle(3)
     let promises = chapters.map((chapterUrl) => throttle(async () => {
       return this.fetchResource(chapterUrl, { uri: chapterUrl }).then((chapterMeta) => {
-        
         if (!chapterMeta.content) {
-           return Promise.reject("the books 'content' key is missing from the response.");
+          return Promise.reject("the books 'content' key is missing from the response.");
         }
         // ### chapter meta fetched successfully
         // ### fetch chapter content for now
         return this.fetchResource(chapterMeta.content, { uri: chapterMeta.content, json: false }).then(async (chapterContentResponse) => {
-          
           var chapterContent = await chapterContentResponse.text();
           chapterMeta["added_chapter_content"] = chapterContent;
           let chapToc = toc[chapterMeta.url];
